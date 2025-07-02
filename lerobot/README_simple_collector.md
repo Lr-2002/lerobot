@@ -1,179 +1,166 @@
-# 简化版通用数据收集器
+# 简化数据收集器 🤖
 
-## 🎯 设计目标
+一个超级简单易用的机器人数据收集系统，专为LeRobot设计。
 
-这个简化版数据收集器专为你的需求设计：
+## ✨ 特性
 
-- ✅ **轻松引入** - 一行代码添加一个数据源
-- ✅ **实时性** - 多线程并行收集，各数据源独立运行
-- ✅ **操作性** - Ctrl+C直接优雅退出并保存数据
-- ✅ **丰富性** - 支持相机、传感器、控制器等多种数据源
+- **🚀 超简单** - 几行代码就能开始收集数据
+- **⚡ 实时性** - 多线程并行收集，支持不同频率
+- **🛑 操作性** - Ctrl+C即可停止并自动保存
+- **🔌 丰富性** - 支持相机、传感器、控制器等多种数据源
+- **💾 兼容性** - 自动转换为LeRobot标准格式
 
 ## 🚀 快速开始
 
-### 基本使用（3步搞定）
+### 1. 基础使用
 
 ```python
-from simple_data_collector import SimpleDataCollector
+from simple_data_collector import DataCollector
 
-# 1. 创建收集器
-collector = SimpleDataCollector("./my_data")
+# 创建收集器
+collector = DataCollector(fps=30, dataset_name="my_robot_data")
 
-# 2. 添加数据源（一行一个！）
-collector.add_sensor("arm_joints", your_arm.get_joints, frequency=100)
-collector.add_sensor("camera", your_camera.get_image, frequency=30)
-collector.add_control("teleop", your_teleop.get_command, frequency=50)
+# 添加数据源（超简单！）
+collector.add_sensor("camera_rgb", your_camera.get_frame, frequency=30)
+collector.add_sensor("joint_pos", your_robot.get_joints, frequency=100)
+collector.add_controller("teleop", your_teleop.get_action, frequency=30)
 
-# 3. 开始收集
-collector.run_forever()  # Ctrl+C停止并自动保存
+# 开始收集（Ctrl+C停止）
+collector.run_forever()
 ```
 
-## 📋 支持的数据源类型
+### 2. 完整示例
 
-### 1. 传感器数据
 ```python
-# IMU传感器
-collector.add_sensor("imu", imu_system.get_data, frequency=200)
-
-# 力传感器
-collector.add_sensor("force", force_sensor.read, frequency=100)
-
-# 关节位置
-collector.add_sensor("joints", robot.get_joint_pos, frequency=100)
+# 参考 my_data_collection_example.py
+python my_data_collection_example.py
 ```
 
-### 2. 相机数据
+### 3. 转换为LeRobot格式
+
 ```python
-# 多个相机
-collector.add_camera("front_cam", camera_id=0, frequency=30)
-collector.add_camera("side_cam", camera_id=1, frequency=30)
+from lerobot_format_converter import convert_simple_data_to_lerobot
 
-# 或者自定义相机回调
-collector.add_sensor("custom_cam", lambda: your_camera.capture(), frequency=30)
-```
-
-### 3. 控制数据
-```python
-# 遥操作命令
-collector.add_control("teleop", teleop_system.get_command, frequency=50)
-
-# 键盘输入
-collector.add_control("keyboard", keyboard_handler.get_input, frequency=30)
-```
-
-## 🔧 高级功能
-
-### 手动控制收集过程
-```python
-collector = SimpleDataCollector("./data")
-
-# 添加数据源...
-collector.add_sensor("sensor1", callback1, frequency=100)
-
-# 手动开始/停止
-collector.start_collection()
-time.sleep(10)  # 收集10秒
-collector.stop_collection()
-collector.save_data("my_experiment")
-```
-
-### 自定义数据源配置
-```python
-from simple_data_collector import DataSourceConfig
-
-config = DataSourceConfig(
-    name="high_freq_sensor",
-    data_type="sensor", 
-    frequency=1000.0,  # 1kHz
-    enabled=True,
-    params={"buffer_size": 1024}
+# 转换数据
+dataset = convert_simple_data_to_lerobot(
+    h5_file="./data/my_robot_data_20240702_161152.h5",
+    output_dir="./lerobot_dataset",
+    task_name="pick_and_place"
 )
-
-collector.add_data_source(config, your_callback)
 ```
 
-## 📊 数据格式
+## 📊 数据源类型
 
-收集的数据保存为JSON格式，包含：
+### 传感器数据 (add_sensor)
+- **相机**: RGB图像、深度图像
+- **关节**: 位置、速度、力矩
+- **触觉**: 压力、温度
+- **IMU**: 加速度、角速度
+- **其他**: 任何传感器数据
 
-```json
-{
-  "metadata": {
-    "total_samples": 1000,
-    "duration": 10.5,
-    "data_sources": {
-      "arm_joints": {"type": "sensor", "frequency": 100, "samples": 950},
-      "camera": {"type": "image", "frequency": 30, "samples": 315}
-    }
-  },
-  "timestamps": [1234567890.1, 1234567890.2, ...],
-  "data": {
-    "arm_joints": [[1.2, 3.4, ...], [1.3, 3.5, ...], ...],
-    "camera": [<image_data>, <image_data>, ...]
-  }
-}
-```
+### 控制器数据 (add_controller)
+- **遥操作**: 人工控制命令
+- **自动控制**: 算法输出
+- **混合控制**: 人机协作
 
-## 🛠️ 与你现有系统集成
+## 🔧 自定义你的系统
 
-### 集成你的机械臂系统
+只需要替换示例中的TODO部分：
+
 ```python
-# 假设你有一个RealmanArm类
-realman_arm = RealmanArm()
+class YourCameraSystem:
+    def get_camera_frame(self, camera_id):
+        # TODO: 替换为你的相机读取代码
+        return your_actual_camera_read(camera_id)
 
-collector.add_sensor("arm_pos", realman_arm.get_joint_positions, frequency=100)
-collector.add_sensor("arm_vel", realman_arm.get_joint_velocities, frequency=100)
+class YourRobotSystem:
+    def get_joint_positions(self):
+        # TODO: 替换为你的关节读取代码
+        return your_actual_joint_read()
 ```
 
-### 集成你的相机系统
-```python
-# 假设你有多个相机
-for i, camera in enumerate(your_cameras):
-    collector.add_sensor(f"camera_{i}", 
-                        lambda cam=camera: cam.capture(), 
-                        frequency=30)
+## 📁 输出格式
+
+### 原始数据 (HDF5)
+```
+data/
+├── my_robot_data_20240702_161152.h5      # 原始数据
+└── my_robot_data_20240702_161152_metadata.json  # 元数据
 ```
 
-### 集成你的遥操作系统
-```python
-# 假设你有遥操作系统
-teleop = YourTeleopSystem()
-
-collector.add_control("teleop_arm", 
-                     lambda: teleop.get_arm_command(), 
-                     frequency=50)
-collector.add_control("teleop_base", 
-                     lambda: teleop.get_base_command(), 
-                     frequency=30)
+### LeRobot格式
+```
+lerobot_dataset/
+├── dataset_info.json
+├── data-00000-of-00001.arrow
+└── metadata.json
 ```
 
-## 🔍 实时监控
+## 🎯 使用场景
 
-运行时会显示实时状态：
-```
-🚀 简化数据收集器已初始化
-✅ 已添加数据源: arm_joints (sensor, 100.0Hz)
-✅ 已添加数据源: camera (image, 30.0Hz)
-🔄 启动数据收集线程: arm_joints
-🔄 启动数据收集线程: camera
-🎯 开始收集数据，共 2 个数据源
-💡 按 Ctrl+C 停止收集并保存数据
-📈 已收集 1523 个样本
-```
+1. **快速原型** - 几分钟内开始收集数据
+2. **多模态数据** - 同时收集视觉、触觉、运动数据
+3. **实时系统** - 支持高频率数据收集
+4. **研究实验** - 轻松切换不同配置
 
-## ⚡ 性能特点
+## 🔄 工作流程
 
-- **多线程并行** - 每个数据源独立线程，互不影响
-- **频率控制** - 每个数据源可设置不同采样频率
-- **数据同步** - 自动同步不同频率的数据源
-- **内存优化** - 使用队列缓冲，避免内存爆炸
-- **优雅退出** - Ctrl+C安全停止并保存所有数据
+1. **初始化** → 创建DataCollector
+2. **注册** → 添加你的数据源
+3. **收集** → 自动多线程收集
+4. **停止** → Ctrl+C自动保存
+5. **转换** → 转为LeRobot格式
+6. **训练** → 用于机器人学习
 
-## 🐛 故障处理
+## 💡 最佳实践
 
-- 单个数据源出错不影响其他数据源
+### 频率设置
+- **相机**: 30Hz (标准视频)
+- **关节**: 100Hz (高精度控制)
+- **触觉**: 50Hz (触觉反馈)
+- **遥操作**: 30Hz (人类反应)
+
+### 数据同步
+- 系统自动处理时间戳
+- 支持不同频率的数据源
+- 自动对齐到最短序列
+
+### 错误处理
+- 单个数据源错误不影响其他
 - 自动重试机制
 - 详细错误日志
-- 数据完整性检查
 
-这个设计比原来的复杂适配器简单多了，你觉得怎么样？
+## 🚨 注意事项
+
+1. **内存使用**: 大量图像数据会占用内存，建议定期保存
+2. **磁盘空间**: 确保有足够空间存储数据
+3. **权限**: 某些传感器可能需要特殊权限
+4. **网络**: 上传到HuggingFace需要网络连接
+
+## 🛠️ 故障排除
+
+### 常见问题
+
+**Q: 数据收集很慢？**
+A: 检查数据源的处理时间，考虑降低频率或优化代码
+
+**Q: 某个传感器数据缺失？**
+A: 检查传感器连接和权限，查看错误日志
+
+**Q: 转换LeRobot格式失败？**
+A: 确保数据格式正确，检查numpy数组维度
+
+**Q: Ctrl+C不能停止？**
+A: 可能有线程阻塞，检查数据源回调函数
+
+## 📞 支持
+
+遇到问题？
+1. 查看错误日志
+2. 检查数据源实现
+3. 参考示例代码
+4. 提交Issue
+
+---
+
+**开始你的机器人数据收集之旅吧！** 🚀

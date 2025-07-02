@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-简化版通用数据收集器
-支持多线程实时数据收集，统一存储为LeRobot格式
+简化的通用数据收集器
+支持多线程、实时数据收集，Ctrl+C停止
 """
 
 import threading
@@ -11,100 +11,72 @@ import sys
 from dataclasses import dataclass, field
 from typing import Dict, Any, Callable, Optional, List
 import numpy as np
-from queue import Queue, Empty
+from collections import defaultdict
 import json
 from pathlib import Path
-import cv2
+import h5py
+from datetime import datetime
 
-@dataclass
-class DataSourceConfig:
-    """数据源配置"""
-    name: str                    # 数据源名称
-    data_type: str              # 数据类型: 'image', 'sensor', 'control'
-    frequency: float = 30.0     # 采样频率 Hz
-    enabled: bool = True        # 是否启用
-    params: Dict[str, Any] = field(default_factory=dict)  # 自定义参数
-
-class SimpleDataCollector:
-    """简化版数据收集器"""
+class DataCollector:
+    """简化的数据收集器"""
     
-    def __init__(self, output_dir: str = "./data"):
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(exist_ok=True)
-        
-        # 数据源管理
-        self.data_sources: Dict[str, DataSourceConfig] = {}
-        self.data_callbacks: Dict[str, Callable] = {}
-        
-        # 多线程管理
-        self.threads: List[threading.Thread] = []
-        self.data_queues: Dict[str, Queue] = {}
+    def __init__(self, fps: int = 30, dataset_name: str = "robot_data"):
+        self.fps = fps
+        self.dataset_name = dataset_name
         self.running = False
         
-        # 数据存储
-        self.collected_data: Dict[str, List] = {}
-        self.timestamps: List[float] = []
+        # 数据源注册
+        self.sensors = {}  # 传感器数据源
+        self.controllers = {}  # 控制器数据源
         
-        # 设置信号处理（Ctrl+C优雅退出）
+        # 数据存储
+        self.collected_data = defaultdict(list)
+        self.timestamps = []
+        
+        # 线程管理
+        self.threads = []
+        self.data_lock = threading.Lock()
+        
+        # 设置信号处理
         signal.signal(signal.SIGINT, self._signal_handler)
         
-        print("🚀 简化数据收集器已初始化")
+        print(f"🤖 数据收集器初始化完成 - FPS: {fps}, 数据集: {dataset_name}")
     
-    def add_data_source(self, config: DataSourceConfig, callback: Callable):
-        """添加数据源"""
-        self.data_sources[config.name] = config
-        self.data_callbacks[config.name] = callback
-        self.data_queues[config.name] = Queue()
-        self.collected_data[config.name] = []
+    def add_sensor(self, name: str, callback: Callable, frequency: Optional[int] = None):
+        """添加传感器数据源
         
-        print(f"✅ 已添加数据源: {config.name} ({config.data_type}, {config.frequency}Hz)")
+        Args:
+            name: 传感器名称
+            callback: 获取数据的回调函数
+            frequency: 采样频率，None表示使用默认FPS
+        """
+        self.sensors[name] = {
+            'callback': callback,
+            'frequency': frequency or self.fps
+        }
+        print(f"📷 添加传感器: {name} (频率: {frequency or self.fps}Hz)")
     
-    def add_camera(self, name: str, camera_id: int = 0, frequency: float = 30.0):
-        """快速添加相机数据源"""
-        def camera_callback():
-            cap = cv2.VideoCapture(camera_id)
-            if cap.isOpened():
-                ret, frame = cap.read()
-                cap.release()
-                if ret:
-                    return frame
-            return None
+    def add_controller(self, name: str, callback: Callable, frequency: Optional[int] = None):
+        """添加控制器数据源
         
-        config = DataSourceConfig(
-            name=name,
-            data_type="image",
-            frequency=frequency,
-            params={"camera_id": camera_id}
-        )
-        self.add_data_source(config, camera_callback)
+        Args:
+            name: 控制器名称
+            callback: 获取数据的回调函数
+            frequency: 采样频率，None表示使用默认FPS
+        """
+        self.controllers[name] = {
+            'callback': callback,
+            'frequency': frequency or self.fps
+        }
+        print(f"🎮 添加控制器: {name} (频率: {frequency or self.fps}Hz)")
     
-    def add_sensor(self, name: str, callback: Callable, frequency: float = 100.0):
-        """快速添加传感器数据源"""
-        config = DataSourceConfig(
-            name=name,
-            data_type="sensor", 
-            frequency=frequency
-        )
-        self.add_data_source(config, callback)
-    
-    def add_control(self, name: str, callback: Callable, frequency: float = 50.0):
-        """快速添加控制数据源"""
-        config = DataSourceConfig(
-            name=name,
-            data_type="control",
-            frequency=frequency
-        )
-        self.add_data_source(config, callback)
-    
-    def _data_collection_thread(self, source_name: str):
-        """单个数据源的收集线程"""
-        config = self.data_sources[source_name]
-        callback = self.data_callbacks[source_name]
-        queue = self.data_queues[source_name]
+    def _collect_data_thread(self, source_name: str, source_info: Dict, source_type: str):
+        """数据收集线程"""
+        callback = source_info['callback']
+        frequency = source_info['frequency']
+        interval = 1.0 / frequency
         
-        interval = 1.0 / config.frequency
-        
-        print(f"🔄 启动数据收集线程: {source_name}")
+        print(f"🔄 启动{source_type}线程: {source_name}")
         
         while self.running:
             try:
@@ -112,9 +84,14 @@ class SimpleDataCollector:
                 
                 # 获取数据
                 data = callback()
-                if data is not None:
-                    timestamp = time.time()
-                    queue.put((timestamp, data))
+                
+                # 存储数据
+                with self.data_lock:
+                    self.collected_data[source_name].append({
+                        'data': data,
+                        'timestamp': time.time(),
+                        'type': source_type
+                    })
                 
                 # 控制频率
                 elapsed = time.time() - start_time
@@ -123,194 +100,212 @@ class SimpleDataCollector:
                     time.sleep(sleep_time)
                     
             except Exception as e:
-                print(f"❌ 数据源 {source_name} 出错: {e}")
-                time.sleep(0.1)
-    
-    def _data_sync_thread(self):
-        """数据同步线程 - 将所有数据源的数据同步到主存储"""
-        print("🔄 启动数据同步线程")
-        
-        while self.running:
-            try:
-                current_time = time.time()
-                synced_data = {}
-                
-                # 从各个队列获取最新数据
-                for source_name, queue in self.data_queues.items():
-                    latest_data = None
-                    latest_timestamp = 0
-                    
-                    # 获取队列中最新的数据
-                    while True:
-                        try:
-                            timestamp, data = queue.get_nowait()
-                            if timestamp > latest_timestamp:
-                                latest_timestamp = timestamp
-                                latest_data = data
-                        except Empty:
-                            break
-                    
-                    if latest_data is not None:
-                        synced_data[source_name] = latest_data
-                
-                # 如果有数据，保存到主存储
-                if synced_data:
-                    self.timestamps.append(current_time)
-                    for source_name, data in synced_data.items():
-                        self.collected_data[source_name].append(data)
-                    
-                    # 为没有数据的源填充None
-                    for source_name in self.data_sources.keys():
-                        if source_name not in synced_data:
-                            self.collected_data[source_name].append(None)
-                
-                time.sleep(1.0 / 30.0)  # 30Hz同步频率
-                
-            except Exception as e:
-                print(f"❌ 数据同步出错: {e}")
-                time.sleep(0.1)
+                print(f"❌ {source_name} 数据收集错误: {e}")
+                time.sleep(0.1)  # 错误时短暂休息
     
     def start_collection(self):
         """开始数据收集"""
         if self.running:
-            print("⚠️  数据收集已在运行中")
-            return
-        
-        if not self.data_sources:
-            print("❌ 没有配置数据源，请先添加数据源")
+            print("⚠️ 数据收集已在运行中")
             return
         
         self.running = True
+        self.collected_data.clear()
+        self.timestamps.clear()
         
-        # 启动各个数据源的收集线程
-        for source_name in self.data_sources.keys():
-            if self.data_sources[source_name].enabled:
-                thread = threading.Thread(
-                    target=self._data_collection_thread,
-                    args=(source_name,),
-                    daemon=True
-                )
-                thread.start()
-                self.threads.append(thread)
+        print("🚀 开始数据收集...")
         
-        # 启动数据同步线程
-        sync_thread = threading.Thread(
-            target=self._data_sync_thread,
-            daemon=True
-        )
-        sync_thread.start()
-        self.threads.append(sync_thread)
+        # 启动传感器线程
+        for name, info in self.sensors.items():
+            thread = threading.Thread(
+                target=self._collect_data_thread,
+                args=(name, info, 'sensor'),
+                daemon=True
+            )
+            thread.start()
+            self.threads.append(thread)
         
-        print(f"🎯 开始收集数据，共 {len(self.data_sources)} 个数据源")
-        print("💡 按 Ctrl+C 停止收集并保存数据")
+        # 启动控制器线程
+        for name, info in self.controllers.items():
+            thread = threading.Thread(
+                target=self._collect_data_thread,
+                args=(name, info, 'controller'),
+                daemon=True
+            )
+            thread.start()
+            self.threads.append(thread)
+        
+        print(f"✅ 已启动 {len(self.threads)} 个数据收集线程")
+        print("💡 按 Ctrl+C 停止收集")
     
     def stop_collection(self):
         """停止数据收集"""
         if not self.running:
             return
         
-        print("\n🛑 正在停止数据收集...")
+        print("\n🛑 停止数据收集...")
         self.running = False
         
         # 等待所有线程结束
         for thread in self.threads:
-            thread.join(timeout=2.0)
+            thread.join(timeout=1.0)
         
         self.threads.clear()
-        print("✅ 所有收集线程已停止")
+        print("✅ 所有线程已停止")
+        
+        # 显示收集到的数据统计
+        total_samples = sum(len(data) for data in self.collected_data.values())
+        print(f"📊 收集统计: {total_samples} 个样本")
     
-    def save_data(self, filename: Optional[str] = None):
-        """保存数据为LeRobot兼容格式"""
-        if not self.timestamps:
-            print("⚠️  没有收集到数据")
+    def save_data(self, output_dir: str = "./data"):
+        """保存收集的数据"""
+        if not self.collected_data:
+            print("⚠️ 没有数据可保存")
             return
         
-        if filename is None:
-            timestamp = int(time.time())
-            filename = f"collected_data_{timestamp}"
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # 保存为HDF5格式（LeRobot兼容）
+        h5_file = output_path / f"{self.dataset_name}_{timestamp}.h5"
+        
+        with h5py.File(h5_file, 'w') as f:
+            for source_name, data_list in self.collected_data.items():
+                if not data_list:
+                    continue
+                
+                group = f.create_group(source_name)
+                
+                # 提取数据和时间戳
+                timestamps = [item['timestamp'] for item in data_list]
+                data_values = [item['data'] for item in data_list]
+                
+                # 保存时间戳
+                group.create_dataset('timestamps', data=np.array(timestamps))
+                
+                # 保存数据（处理不同数据类型）
+                try:
+                    if isinstance(data_values[0], np.ndarray):
+                        # 图像或数组数据
+                        stacked_data = np.stack(data_values)
+                        group.create_dataset('data', data=stacked_data)
+                    elif isinstance(data_values[0], (list, tuple)):
+                        # 列表数据
+                        group.create_dataset('data', data=np.array(data_values))
+                    else:
+                        # 标量数据
+                        group.create_dataset('data', data=np.array(data_values))
+                except Exception as e:
+                    print(f"⚠️ 保存 {source_name} 数据时出错: {e}")
         
         # 保存元数据
         metadata = {
-            "total_samples": len(self.timestamps),
-            "duration": self.timestamps[-1] - self.timestamps[0] if self.timestamps else 0,
-            "data_sources": {
-                name: {
-                    "type": config.data_type,
-                    "frequency": config.frequency,
-                    "samples": len([x for x in self.collected_data[name] if x is not None])
-                }
-                for name, config in self.data_sources.items()
-            },
-            "collection_time": time.strftime("%Y-%m-%d %H:%M:%S")
+            'dataset_name': self.dataset_name,
+            'fps': self.fps,
+            'collection_time': timestamp,
+            'sensors': list(self.sensors.keys()),
+            'controllers': list(self.controllers.keys()),
+            'total_samples': {name: len(data) for name, data in self.collected_data.items()}
         }
         
-        # 保存到JSON文件
-        output_file = self.output_dir / f"{filename}.json"
-        with open(output_file, 'w') as f:
-            json.dump({
-                "metadata": metadata,
-                "timestamps": self.timestamps,
-                "data": {name: data for name, data in self.collected_data.items()}
-            }, f, indent=2, default=str)
+        json_file = output_path / f"{self.dataset_name}_{timestamp}_metadata.json"
+        with open(json_file, 'w') as f:
+            json.dump(metadata, f, indent=2)
         
-        print(f"💾 数据已保存到: {output_file}")
-        print(f"📊 收集了 {len(self.timestamps)} 个样本，时长 {metadata['duration']:.2f} 秒")
-        
-        return output_file
+        print(f"💾 数据已保存:")
+        print(f"   HDF5: {h5_file}")
+        print(f"   元数据: {json_file}")
+        print(f"   总样本数: {sum(len(data) for data in self.collected_data.values())}")
     
     def _signal_handler(self, signum, frame):
-        """信号处理器 - 处理Ctrl+C"""
-        print(f"\n🔔 收到信号 {signum}，正在优雅退出...")
+        """处理Ctrl+C信号"""
+        print(f"\n🔔 收到停止信号 (信号: {signum})")
         self.stop_collection()
         self.save_data()
-        print("👋 数据收集器已退出")
+        print("👋 数据收集完成，再见！")
         sys.exit(0)
     
     def run_forever(self):
-        """运行数据收集器直到手动停止"""
+        """运行数据收集直到手动停止"""
         self.start_collection()
         
         try:
             while self.running:
-                time.sleep(1)
-                # 显示实时状态
-                if len(self.timestamps) > 0:
-                    print(f"\r📈 已收集 {len(self.timestamps)} 个样本", end="", flush=True)
+                time.sleep(0.1)
         except KeyboardInterrupt:
-            pass  # 信号处理器会处理
+            pass
+        finally:
+            self.stop_collection()
+            self.save_data()
+
+# 便捷的数据源示例类
+class CameraSource:
+    """相机数据源示例"""
+    def __init__(self, camera_id: int = 0, resolution: tuple = (640, 480)):
+        self.camera_id = camera_id
+        self.resolution = resolution
+        print(f"📷 初始化相机 {camera_id}")
     
-    def get_status(self):
-        """获取收集器状态"""
+    def get_frame(self):
+        """获取相机帧（示例：返回随机数据）"""
+        # TODO: 替换为实际的相机读取代码
+        return np.random.randint(0, 255, (*self.resolution, 3), dtype=np.uint8)
+
+class JointSensor:
+    """关节传感器示例"""
+    def __init__(self, joint_count: int = 26):
+        self.joint_count = joint_count
+        print(f"🦾 初始化关节传感器 ({joint_count}个关节)")
+    
+    def get_positions(self):
+        """获取关节位置"""
+        # TODO: 替换为实际的关节读取代码
+        return np.random.uniform(-1, 1, self.joint_count).tolist()
+
+class TactileSensor:
+    """触觉传感器示例"""
+    def __init__(self, sensor_count: int = 1100):
+        self.sensor_count = sensor_count
+        print(f"👋 初始化触觉传感器 ({sensor_count}个触点)")
+    
+    def get_tactile_data(self):
+        """获取触觉数据"""
+        # TODO: 替换为实际的CAN触觉读取代码
+        return np.random.uniform(0, 1, (self.sensor_count, 1))
+
+class TeleopController:
+    """遥操作控制器示例"""
+    def __init__(self):
+        print("🎮 初始化遥操作控制器")
+    
+    def get_action(self):
+        """获取遥操作动作"""
+        # TODO: 替换为实际的遥操作读取代码
         return {
-            "running": self.running,
-            "data_sources": len(self.data_sources),
-            "samples_collected": len(self.timestamps),
-            "active_threads": len(self.threads)
+            'arm_joints': np.random.uniform(-1, 1, 26).tolist(),
+            'body_movement': np.random.uniform(-0.1, 0.1, 3).tolist()
         }
 
-
-# 使用示例和工具函数
-def create_dummy_sensor_callback(sensor_name: str, dim: int = 1):
-    """创建虚拟传感器回调函数"""
-    def callback():
-        return np.random.randn(dim).tolist()
-    return callback
-
-def create_dummy_control_callback(control_name: str, dim: int = 6):
-    """创建虚拟控制回调函数"""
-    def callback():
-        return np.random.randn(dim).tolist()
-    return callback
-
+# 使用示例
 if __name__ == "__main__":
-    # 使用示例
-    collector = SimpleDataCollector("./collected_data")
+    # 创建数据收集器
+    collector = DataCollector(fps=30, dataset_name="my_robot_data")
     
-    # 添加各种数据源
-    collector.add_camera("front_camera", camera_id=0, frequency=30)
-    collector.add_sensor("imu", create_dummy_sensor_callback("imu", 6), frequency=100)
-    collector.add_sensor("force_sensor", create_dummy_sensor_callback("force", 3), frequency=50)
-    collector.add_control("arm_joints", create_dummy_control_callback("arm", 7), frequency=50)
+    # 创建数据源
+    camera1 = CameraSource(camera_id=0)
+    camera2 = CameraSource(camera_id=1)
+    joints = JointSensor(joint_count=26)
+    tactile = TactileSensor()
+    teleop = TeleopController()
     
-    # 开始收集
+    # 注册数据源
+    collector.add_sensor("camera_0_rgb", camera1.get_frame, frequency=30)
+    collector.add_sensor("camera_1_rgb", camera2.get_frame, frequency=30)
+    collector.add_sensor("joint_positions", joints.get_positions, frequency=100)
+    collector.add_sensor("tactile_data", tactile.get_tactile_data, frequency=50)
+    collector.add_controller("teleop_action", teleop.get_action, frequency=30)
+    
+    # 开始收集（会一直运行直到Ctrl+C）
     collector.run_forever()

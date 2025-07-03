@@ -16,110 +16,184 @@ import json
 from pathlib import Path
 import h5py
 from datetime import datetime
+import tempfile
+import shutil
+from PIL import Image
 
 class DataCollector:
     """简化的数据收集器"""
     
-    def __init__(self, fps: int = 30, dataset_name: str = "robot_data"):
+    def __init__(self, fps: int = 30, dataset_name: str = "robot_data", output_dir: str = "./data", 
+                 video_config: Optional['VideoConfig'] = None):
         self.fps = fps
         self.dataset_name = dataset_name
-        self.running = False
-        
-        # 数据源注册
-        self.sensors = {}  # 传感器数据源
-        self.controllers = {}  # 控制器数据源
-        
-        # 数据存储
-        self.collected_data = defaultdict(list)
-        self.timestamps = []
-        
-        # 线程管理
-        self.threads = []
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.default_frequency = fps
+        self.video_config = video_config or VideoConfig()
+        self.data_sources: Dict[str, 'DataSourceConfig'] = {}
+        self.collected_data: Dict[str, List] = {}
+        self.timestamps: Dict[str, List] = {}
+        self.threads: Dict[str, threading.Thread] = {}
+        self.stop_event = threading.Event()
         self.data_lock = threading.Lock()
+        self.is_collecting = False
         
-        # 设置信号处理
+        # For video storage
+        self.temp_image_dirs: Dict[str, Path] = {}  # Temporary directories for images
+        self.image_counters: Dict[str, int] = {}  # Frame counters for each image source
+        
+        # Setup signal handler for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
         
         print(f"🤖 数据收集器初始化完成 - FPS: {fps}, 数据集: {dataset_name}")
     
-    def add_sensor(self, name: str, callback: Callable, frequency: Optional[int] = None):
+    @dataclass
+    class DataSourceConfig:
+        """Configuration for a data source"""
+        name: str
+        callback: Callable[[], Any]
+        frequency: float = 30.0  # Hz
+        enabled: bool = True
+        is_image: bool = False  # Whether this data source produces images
+
+    @dataclass
+    class VideoConfig:
+        """Configuration for video encoding"""
+        enabled: bool = True  # Use video encoding for images
+        codec: str = "libsvtav1"  # Video codec: libsvtav1, libx264, libx265
+        pixel_format: str = "yuv420p"  # Pixel format
+        crf: int = 30  # Constant Rate Factor (quality: 0=lossless, 51=worst)
+        fps: int = 30  # Video frame rate
+        keyframe_interval: int = 2  # GOP size (frames between keyframes)
+
+    def add_sensor(self, name: str, callback: Callable, frequency: Optional[int] = None, enabled: bool = True, is_image: bool = False):
         """添加传感器数据源
         
         Args:
             name: 传感器名称
             callback: 获取数据的回调函数
             frequency: 采样频率，None表示使用默认FPS
+            enabled: 是否启用该数据源
+            is_image: 是否为图像数据源
         """
-        self.sensors[name] = {
-            'callback': callback,
-            'frequency': frequency or self.fps
-        }
-        print(f"📷 添加传感器: {name} (频率: {frequency or self.fps}Hz)")
+        config = self.DataSourceConfig(
+            name=name,
+            callback=callback,
+            frequency=frequency or self.default_frequency,
+            enabled=enabled,
+            is_image=is_image
+        )
+        self.data_sources[name] = config
+        self.collected_data[name] = []
+        self.timestamps[name] = []
+        
+        # Setup temporary directory for image data sources if video encoding is enabled
+        if is_image and self.video_config.enabled:
+            temp_dir = Path(tempfile.mkdtemp(prefix=f"images_{name}_"))
+            self.temp_image_dirs[name] = temp_dir
+            self.image_counters[name] = 0
+            print(f"Registered image data source '{name}' at {config.frequency} Hz (video encoding enabled)")
+        else:
+            print(f"Registered data source '{name}' at {config.frequency} Hz")
     
-    def add_controller(self, name: str, callback: Callable, frequency: Optional[int] = None):
+    def add_controller(self, name: str, callback: Callable, frequency: Optional[int] = None, enabled: bool = True, is_image: bool = False):
         """添加控制器数据源
         
         Args:
             name: 控制器名称
             callback: 获取数据的回调函数
             frequency: 采样频率，None表示使用默认FPS
+            enabled: 是否启用该数据源
+            is_image: 是否为图像数据源
         """
-        self.controllers[name] = {
-            'callback': callback,
-            'frequency': frequency or self.fps
-        }
-        print(f"🎮 添加控制器: {name} (频率: {frequency or self.fps}Hz)")
+        config = self.DataSourceConfig(
+            name=name,
+            callback=callback,
+            frequency=frequency or self.default_frequency,
+            enabled=enabled,
+            is_image=is_image
+        )
+        self.data_sources[name] = config
+        self.collected_data[name] = []
+        self.timestamps[name] = []
+        
+        # Setup temporary directory for image data sources if video encoding is enabled
+        if is_image and self.video_config.enabled:
+            temp_dir = Path(tempfile.mkdtemp(prefix=f"images_{name}_"))
+            self.temp_image_dirs[name] = temp_dir
+            self.image_counters[name] = 0
+            print(f"Registered image data source '{name}' at {config.frequency} Hz (video encoding enabled)")
+        else:
+            print(f"Registered data source '{name}' at {config.frequency} Hz")
     
-    def _collect_data_thread(self, source_name: str, source_info: Dict, source_type: str):
-        """数据收集线程"""
-        callback = source_info['callback']
-        frequency = source_info['frequency']
-        interval = 1.0 / frequency
+    def _collect_data(self, source_name: str):
+        """Data collection thread function"""
+        config = self.data_sources[source_name]
+        interval = 1.0 / config.frequency
         
-        print(f"🔄 启动{source_type}线程: {source_name}")
+        print(f"Started collecting data from '{source_name}' at {config.frequency} Hz")
         
-        while self.running:
+        while not self.stop_event.is_set():
+            start_time = time.time()
+            
             try:
-                start_time = time.time()
+                # Get data from callback
+                data = config.callback()
+                timestamp = time.time()
                 
-                # 获取数据
-                data = callback()
-                
-                # 存储数据
-                with self.data_lock:
-                    self.collected_data[source_name].append({
-                        'data': data,
-                        'timestamp': time.time(),
-                        'type': source_type
-                    })
-                
-                # 控制频率
-                elapsed = time.time() - start_time
-                sleep_time = max(0, interval - elapsed)
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
+                # Handle image data differently if video encoding is enabled
+                if config.is_image and self.video_config.enabled:
+                    self._save_image_frame(source_name, data, timestamp)
+                else:
+                    # Store data thread-safely
+                    with self.data_lock:
+                        self.collected_data[source_name].append(data)
+                        self.timestamps[source_name].append(timestamp)
                     
             except Exception as e:
-                print(f"❌ {source_name} 数据收集错误: {e}")
-                time.sleep(0.1)  # 错误时短暂休息
+                print(f"Error collecting data from '{source_name}': {e}")
+                continue
+            
+            # Sleep for the remaining time to maintain frequency
+            elapsed = time.time() - start_time
+            sleep_time = max(0, interval - elapsed)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+    
+    def _save_image_frame(self, source_name: str, frame: np.ndarray, timestamp: float):
+        """Save an image frame to a temporary directory"""
+        temp_dir = self.temp_image_dirs[source_name]
+        frame_counter = self.image_counters[source_name]
+        filename = f"{frame_counter:06d}.jpg"
+        filepath = temp_dir / filename
+        
+        # Save image frame
+        Image.fromarray(frame).save(filepath)
+        
+        # Update frame counter
+        self.image_counters[source_name] += 1
     
     def start_collection(self):
         """开始数据收集"""
-        if self.running:
+        if self.is_collecting:
             print("⚠️ 数据收集已在运行中")
             return
         
-        self.running = True
-        self.collected_data.clear()
-        self.timestamps.clear()
+        self.is_collecting = True
         
         print("🚀 开始数据收集...")
         
         # 启动传感器线程
-        for name, info in self.sensors.items():
-            thread = threading.Thread(
-                target=self._collect_data_thread,
-                args=(name, info, 'sensor'),
+        for name, config in self.data_sources.items():
+            if config.enabled:
+                thread = threading.Thread(
+                    target=self._collect_data,
+                    args=(name,),
+                    daemon=True
+                )
+                thread.start()
+                self.threads[name] = thread
                 daemon=True
             )
             thread.start()

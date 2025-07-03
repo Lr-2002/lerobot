@@ -173,3 +173,7 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+lerobot/collected_data
+lerobot/test_data
+lerobot/test_output
+lerobot/video_data

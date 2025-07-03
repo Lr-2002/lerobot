@@ -93,8 +93,13 @@ class YourTactileSystem:
 
 class RealmanTeleopSystem:
 	"""基于ButtonTele的遥操作系统"""
-	def __init__(self, left_arm_ip, right_arm_ip, left_hand_port, right_hand_port, 
-				 left_esp32_name, right_esp32_name):
+	def __init__(self, 
+			left_arm_ip='192.168.1.18',
+			right_arm_ip='192.168.1.19',
+			left_hand_port='/dev/ttyUSB0',
+			right_hand_port='/dev/ttyUSB1',
+			left_esp32_name='ESP32_Left',
+			right_esp32_name='ESP32_Right'):
 		self.teleop = ButtonTele(
 			left_arm_ip=left_arm_ip,
 			right_arm_ip=right_arm_ip,
@@ -114,8 +119,8 @@ class RealmanTeleopSystem:
 			commands = {
 				'left_arm_joints': getattr(self.teleop, 'left_arm_joints', [0]*7),
 				'right_arm_joints': getattr(self.teleop, 'right_arm_joints', [0]*7),
-				'left_gripper': getattr(self.teleop, 'left_gripper_pos', 0.0),
-				'right_gripper': getattr(self.teleop, 'right_gripper_pos', 0.0),
+				'left_hand': getattr(self.teleop, 'left_hand', [0] * 6 ),
+				'right_hand': getattr(self.teleop, 'right_hand', [0] * 6 ),
 				'timestamp': time.time()
 			}
 			return commands
@@ -124,8 +129,8 @@ class RealmanTeleopSystem:
 			return {
 				'left_arm_joints': [0]*7,
 				'right_arm_joints': [0]*7,
-				'left_gripper': 0.0,
-				'right_gripper': 0.0,
+				'left_hand': [0]*6,
+				'right_hand': [0]*6,
 				'timestamp': time.time()
 			}
 	

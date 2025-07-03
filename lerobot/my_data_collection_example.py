@@ -116,17 +116,33 @@ def main():
 	
 	# 2. 初始化你的系统
 	camera_system = YourCameraSystem([0, 1, 2, 3, 4])  # 5个相机
+	realsense_system = [RealSenseCamera(i) for i in range(3)]
+	usb_system = [USBCamera(i) for i in range(2)]
 	robot_system = YourRobotSystem()
-	tactile_system = YourTactileSystem()
-	teleop_system = YourTeleopSystem()
+	# tactile_system = YourTactileSystem()
+	# teleop_system = YourTeleopSystem()
 	
 	# 3. 注册数据源 - 超级简单！
 	
-	# 相机数据（不同频率）
-	for i in range(5):
+	# # 相机数据（不同频率）
+	# for i in range(5):
+	# 	collector.add_sensor(
+	# 		f"camera_{i}_rgb",
+	# 		lambda cam_id=i: camera_system.get_camera_frame(cam_id),
+	# 		frequency=30  # 30fps
+	# 	)
+	
+	for i in range(3):
 		collector.add_sensor(
-			f"camera_{i}_rgb",
-			lambda cam_id=i: camera_system.get_camera_frame(cam_id),
+			f"realsense_{i}_rgb",
+			lambda cam_id=i: realsense_system.get_camera_frame(cam_id),
+			frequency=30  # 30fps
+		)
+	
+	for i in range(2):
+		collector.add_sensor(
+			f"usb_{i}_rgb",
+			lambda cam_id=i: usb_system.get_camera_frame(cam_id),
 			frequency=30  # 30fps
 		)
 	
@@ -143,19 +159,19 @@ def main():
 		frequency=100
 	)
 	
-	# 触觉数据（中等频率）
-	collector.add_sensor(
-		"tactile_data",
-		tactile_system.read_tactile_sensors,
-		frequency=50  # 50Hz
-	)
+	# # 触觉数据（中等频率）
+	# collector.add_sensor(
+	# 	"tactile_data",
+	# 	tactile_system.read_tactile_sensors,
+	# 	frequency=50  # 50Hz
+	# )
 	
-	# 遥操作命令（标准频率）
-	collector.add_controller(
-		"teleop_commands",
-		teleop_system.get_teleop_commands,
-		frequency=30  # 30Hz
-	)
+	# # 遥操作命令（标准频率）
+	# collector.add_controller(
+	# 	"teleop_commands",
+	# 	teleop_system.get_teleop_commands,
+	# 	frequency=30  # 30Hz
+	# )
 	
 	print("✅ 所有数据源已注册")
 	print("📊 数据源概览:")

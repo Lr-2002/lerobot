@@ -11,6 +11,8 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 import time
 
+from realman_tele import ButtonTele
+import signal
 
 # 你的实际系统类（替换为你的实际实现）
 class BasicCamera:
@@ -89,28 +91,67 @@ class YourTactileSystem:
 		# TODO: 替换为你的CAN触觉读取代码
 		return np.random.uniform(0, 1000, (1100, 1))
 
-class YourTeleopSystem:
-	"""你的遥操作系统"""
-	def __init__(self):
-		# TODO: 初始化遥操作设备
-		pass
+class RealmanTeleopSystem:
+	"""基于ButtonTele的遥操作系统"""
+	def __init__(self, left_arm_ip, right_arm_ip, left_hand_port, right_hand_port, 
+				 left_esp32_name, right_esp32_name):
+		self.teleop = ButtonTele(
+			left_arm_ip=left_arm_ip,
+			right_arm_ip=right_arm_ip,
+			left_hand_port=left_hand_port,
+			right_hand_port=right_hand_port,
+			left_esp32_device_name=left_esp32_name,
+			right_esp32_device_name=right_esp32_name
+		)
+		self.teleop.start()
+		print("✅ 遥操作系统已启动")
 	
 	def get_teleop_commands(self):
 		"""获取遥操作命令"""
-		# TODO: 替换为你的遥操作读取代码
-		return {
-			'arm_commands': np.random.uniform(-1, 1, 26).tolist(),
-			'gripper_command': 0.5,
-			'body_velocity': [0.1, 0.0, 0.0]
-		}
+		try:
+			# 从 ButtonTele 获取当前状态
+			# 这里需要根据 ButtonTele 的实际 API 调整
+			commands = {
+				'left_arm_joints': getattr(self.teleop, 'left_arm_joints', [0]*7),
+				'right_arm_joints': getattr(self.teleop, 'right_arm_joints', [0]*7),
+				'left_gripper': getattr(self.teleop, 'left_gripper_pos', 0.0),
+				'right_gripper': getattr(self.teleop, 'right_gripper_pos', 0.0),
+				'timestamp': time.time()
+			}
+			return commands
+		except Exception as e:
+			rospy.logwarn(f"获取遥操作命令失败: {e}")
+			return {
+				'left_arm_joints': [0]*7,
+				'right_arm_joints': [0]*7,
+				'left_gripper': 0.0,
+				'right_gripper': 0.0,
+				'timestamp': time.time()
+			}
+	
+	def stop(self):
+		"""停止遥操作系统"""
+		if hasattr(self, 'teleop'):
+			self.teleop.stop()
+			print("🛑 遥操作系统已停止")
+
+def signal_handler(sig, frame):
+	"""信号处理器"""
+	print("\n🛑 收到停止信号...")
+	# 这里会由 KeyboardInterrupt 处理
 
 def main():
-	"""主函数 - 超简单的数据收集设置"""
+	"""主函数 - 集成遥操作的数据收集系统"""
 	
-	print("🚀 初始化机器人数据收集系统...")
+	print("🚀 初始化Realman机器人数据收集系统...")
+	print("🎯 输出目录: ./realman_data")
+	print("📊 数据集名称: realman_teleop_data")
+	
+	# 设置信号处理器
+	signal.signal(signal.SIGINT, signal_handler)
 	
 	# 初始化ROS节点
-	rospy.init_node('robot_data_collector', anonymous=True)
+	rospy.init_node('realman_data_collector', anonymous=True)
 	
 	# 1. 创建视频配置
 	video_config = VideoConfig(
@@ -122,9 +163,9 @@ def main():
 	
 	# 2. 创建数据收集器
 	collector = SimpleDataCollector(
-		fps=30,  # 主频率
-		dataset_name="humanoid_robot_data",
-		output_dir="./robot_data",
+		fps=30,  # 默认频率
+		dataset_name="realman_teleop_data",
+		output_dir="./realman_data",
 		video_config=video_config
 	)
 	
@@ -152,6 +193,21 @@ def main():
 	
 	print("🤖 初始化机器人系统...")
 	robot_system = YourRobotSystem()
+	
+	print("🎮 初始化遥操作系统...")
+	teleop_system = None
+	try:
+		teleop_system = RealmanTeleopSystem(
+			left_arm_ip='192.168.1.18',
+			right_arm_ip='192.168.1.19',
+			left_hand_port='/dev/ttyUSB0',
+			right_hand_port='/dev/ttyUSB1',
+			left_esp32_name='ESP32_Left',
+			right_esp32_name='ESP32_Right'
+		)
+	except Exception as e:
+		print(f"⚠️ 遥操作系统初始化失败: {e}")
+		print("📝 将继续进行数据收集，但不包含遥操作数据")
 	
 	# 4. 注册数据源 - 使用正确的API
 	print("📝 注册数据源...")
@@ -190,7 +246,16 @@ def main():
 	)
 	print("✅ 注册末端执行器位姿传感器")
 	
-	# 可选：注册触觉和遥操作数据
+	# 注册遥操作数据源
+	if teleop_system is not None:
+		collector.register_data_source(
+			"teleop_commands",
+			teleop_system.get_teleop_commands,
+			frequency=30  # 30Hz
+		)
+		print("✅ 注册遥操作命令")
+	
+	# 可选：注册触觉数据
 	# tactile_system = YourTactileSystem()
 	# collector.register_data_source(
 	#     "tactile_data",
@@ -198,31 +263,35 @@ def main():
 	#     frequency=50
 	# )
 	
-	# teleop_system = YourTeleopSystem()
-	# collector.register_data_source(
-	#     "teleop_commands",
-	#     teleop_system.get_teleop_commands,
-	#     frequency=30
-	# )
-	
 	print(f"✅ 所有数据源已注册 ({len(collector.data_sources)} 个)")
 	print()
 	print("🎯 使用说明:")
 	print("   - 程序将自动开始收集数据")
 	print("   - 按 Ctrl+C 停止并保存数据")
-	print("   - 数据会保存到 ./robot_data/ 目录")
+	print("   - 数据会保存到 ./realman_data/ 目录")
 	print("   - 图像数据会自动编码为视频文件")
+	if teleop_system is not None:
+		print("   - 包含遥操作数据收集")
 	print()
 	
-	# 5. 开始收集 - 就这么简单！
+	# 5. 开始收集 - 集成遥操作系统！
 	try:
+		print("🎆 开始 Realman 机器人数据收集...")
 		collector.run_forever()
 	except KeyboardInterrupt:
 		print("\n🛑 用户中断收集")
 	except Exception as e:
 		print(f"\n❌ 数据收集错误: {e}")
+		import traceback
+		traceback.print_exc()
 	finally:
-		print("💾 数据收集完成")
+		# 清理遥操作系统
+		if teleop_system is not None:
+			try:
+				teleop_system.stop()
+			except Exception as e:
+				print(f"⚠️ 停止遥操作系统时出错: {e}")
+		print("💾 Realman 数据收集完成")
 
 if __name__ == "__main__":
 	main()

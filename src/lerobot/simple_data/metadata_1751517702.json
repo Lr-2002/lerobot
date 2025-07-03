@@ -1,0 +1,22 @@
+{
+  "collection_time": 1751517703,
+  "dataset_name": "test_data",
+  "video_config": {
+    "enabled": true,
+    "codec": "libx264",
+    "crf": 23,
+    "fps": 30
+  },
+  "data_sources": {
+    "camera": {
+      "frequency": 30,
+      "is_image": true,
+      "sample_count": 90
+    },
+    "sensors": {
+      "frequency": 100,
+      "is_image": false,
+      "sample_count": 298
+    }
+  }
+}

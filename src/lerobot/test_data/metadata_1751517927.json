@@ -1,0 +1,37 @@
+{
+  "collection_time": 1751517927,
+  "dataset_name": "mock_robot_data",
+  "video_config": {
+    "enabled": true,
+    "codec": "libx264",
+    "crf": 23,
+    "fps": 30
+  },
+  "data_sources": {
+    "mock_camera_0": {
+      "frequency": 30,
+      "is_image": true,
+      "sample_count": 150
+    },
+    "mock_camera_1": {
+      "frequency": 30,
+      "is_image": true,
+      "sample_count": 150
+    },
+    "mock_camera_2": {
+      "frequency": 30,
+      "is_image": true,
+      "sample_count": 150
+    },
+    "joint_positions": {
+      "frequency": 100,
+      "is_image": false,
+      "sample_count": 496
+    },
+    "end_effector_pose": {
+      "frequency": 50,
+      "is_image": false,
+      "sample_count": 250
+    }
+  }
+}

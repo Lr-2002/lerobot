@@ -3,14 +3,13 @@
 实际使用示例 - 展示如何轻松集成你的系统
 """
 
-from re import L
-from simple_data_collector import DataCollector, CameraSource, JointSensor, TactileSensor, TeleopController
+from simple_data_collector_clean import SimpleDataCollector, VideoConfig
 import cv2
 import numpy as np
 import rospy
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
-import cv2
+import time
 
 
 # 你的实际系统类（替换为你的实际实现）
@@ -23,13 +22,15 @@ class BasicCamera:
 		self.image = None 
 		
 		rospy.loginfo(f"订阅主题：{self.topic_name}")
-		sub = rospy.Subscriber(self.topic_name, Image, self.image_callback, callback_args=idx)
+		self.sub = rospy.Subscriber(self.topic_name, Image, self.image_callback)
+		# 不要在这里调用rospy.spin()，会阻塞
 
-		rospy.spin()
-
-	def image_callback(self, data, idx):
-		cv_image = self.bridge.imgmsg_to_cv2(data, "bgr8")
-		self.image = cv_image
+	def image_callback(self, data):
+		try:
+			cv_image = self.bridge.imgmsg_to_cv2(data, "bgr8")
+			self.image = cv_image
+		except Exception as e:
+			rospy.logerr(f"图像转换失败: {e}")
 
 	def get_image(self):		
 		if self.image is None:
@@ -46,7 +47,7 @@ class RealSenseCamera(BasicCamera):
 	"""你的相机系统"""
 	def __init__(self, camera_id):
 		self.camera_id = camera_id
-		self.prefix = f'/camear_d435_{camera_id}/color'
+		self.prefix = f'/camera_d435_{camera_id}/color/'
 		BasicCamera.__init__(self, self.prefix)
 		
 
@@ -108,84 +109,120 @@ def main():
 	
 	print("🚀 初始化机器人数据收集系统...")
 	
-	# 1. 创建数据收集器
-	collector = DataCollector(
-		fps=30,  # 主频率
-		dataset_name="humanoid_robot_data"
+	# 初始化ROS节点
+	rospy.init_node('robot_data_collector', anonymous=True)
+	
+	# 1. 创建视频配置
+	video_config = VideoConfig(
+		enabled=True,
+		codec="libx264",
+		crf=23,  # 高质量
+		fps=30
 	)
 	
-	# 2. 初始化你的系统
-	camera_system = YourCameraSystem([0, 1, 2, 3, 4])  # 5个相机
-	realsense_system = [RealSenseCamera(i) for i in range(3)]
-	usb_system = [USBCamera(i) for i in range(2)]
+	# 2. 创建数据收集器
+	collector = SimpleDataCollector(
+		fps=30,  # 主频率
+		dataset_name="humanoid_robot_data",
+		output_dir="./robot_data",
+		video_config=video_config
+	)
+	
+	# 3. 初始化你的系统
+	print("📷 初始化相机系统...")
+	realsense_cameras = []
+	usb_cameras = []
+	
+	# 创建相机实例（但不要在构造函数中调用rospy.spin())
+	try:
+		for i in range(3):
+			cam = RealSenseCamera(i)
+			realsense_cameras.append(cam)
+			print(f"✅ RealSense相机 {i} 初始化完成")
+	except Exception as e:
+		print(f"⚠️ RealSense相机初始化失败: {e}")
+	
+	try:
+		for i in range(2):
+			cam = USBCamera(i)
+			usb_cameras.append(cam)
+			print(f"✅ USB相机 {i} 初始化完成")
+	except Exception as e:
+		print(f"⚠️ USB相机初始化失败: {e}")
+	
+	print("🤖 初始化机器人系统...")
 	robot_system = YourRobotSystem()
-	# tactile_system = YourTactileSystem()
-	# teleop_system = YourTeleopSystem()
 	
-	# 3. 注册数据源 - 超级简单！
+	# 4. 注册数据源 - 使用正确的API
+	print("📝 注册数据源...")
 	
-	# # 相机数据（不同频率）
-	# for i in range(5):
-	# 	collector.add_sensor(
-	# 		f"camera_{i}_rgb",
-	# 		lambda cam_id=i: camera_system.get_camera_frame(cam_id),
-	# 		frequency=30  # 30fps
-	# 	)
-	
-	for i in range(3):
-		collector.add_sensor(
+	# 注册相机数据源（图像数据）
+	for i, cam in enumerate(realsense_cameras):
+		collector.register_data_source(
 			f"realsense_{i}_rgb",
-			lambda cam_id=i: realsense_system.get_camera_frame(cam_id),
-			frequency=30  # 30fps
+			cam.get_image,  # 直接传递方法引用
+			frequency=30,
+			is_image=True  # 标记为图像数据
 		)
+		print(f"✅ 注册 RealSense {i} 相机")
 	
-	for i in range(2):
-		collector.add_sensor(
+	for i, cam in enumerate(usb_cameras):
+		collector.register_data_source(
 			f"usb_{i}_rgb",
-			lambda cam_id=i: usb_system.get_camera_frame(cam_id),
-			frequency=30  # 30fps
+			cam.get_image,
+			frequency=30,
+			is_image=True
 		)
+		print(f"✅ 注册 USB {i} 相机")
 	
-	# 机器人状态数据（高频率）
-	collector.add_sensor(
+	# 注册机器人数据源（非图像数据）
+	collector.register_data_source(
 		"joint_positions",
 		robot_system.get_joint_positions,
 		frequency=100  # 100Hz
 	)
+	print("✅ 注册关节位置传感器")
 	
-	collector.add_sensor(
+	collector.register_data_source(
 		"end_effector_pose",
 		robot_system.get_end_effector_pose,
-		frequency=100
+		frequency=50  # 50Hz
 	)
+	print("✅ 注册末端执行器位姿传感器")
 	
-	# # 触觉数据（中等频率）
-	# collector.add_sensor(
-	# 	"tactile_data",
-	# 	tactile_system.read_tactile_sensors,
-	# 	frequency=50  # 50Hz
+	# 可选：注册触觉和遥操作数据
+	# tactile_system = YourTactileSystem()
+	# collector.register_data_source(
+	#     "tactile_data",
+	#     tactile_system.read_tactile_sensors,
+	#     frequency=50
 	# )
 	
-	# # 遥操作命令（标准频率）
-	# collector.add_controller(
-	# 	"teleop_commands",
-	# 	teleop_system.get_teleop_commands,
-	# 	frequency=30  # 30Hz
+	# teleop_system = YourTeleopSystem()
+	# collector.register_data_source(
+	#     "teleop_commands",
+	#     teleop_system.get_teleop_commands,
+	#     frequency=30
 	# )
 	
-	print("✅ 所有数据源已注册")
-	print("📊 数据源概览:")
-	print(f"   - 传感器: {len(collector.sensors)} 个")
-	print(f"   - 控制器: {len(collector.controllers)} 个")
+	print(f"✅ 所有数据源已注册 ({len(collector.data_sources)} 个)")
 	print()
-	print("🎯 使用方法:")
-	print("   - 程序会自动开始收集数据")
+	print("🎯 使用说明:")
+	print("   - 程序将自动开始收集数据")
 	print("   - 按 Ctrl+C 停止并保存数据")
-	print("   - 数据会保存到 ./data/ 目录")
+	print("   - 数据会保存到 ./robot_data/ 目录")
+	print("   - 图像数据会自动编码为视频文件")
 	print()
 	
-	# 4. 开始收集 - 就这么简单！
-	collector.run_forever()
+	# 5. 开始收集 - 就这么简单！
+	try:
+		collector.run_forever()
+	except KeyboardInterrupt:
+		print("\n🛑 用户中断收集")
+	except Exception as e:
+		print(f"\n❌ 数据收集错误: {e}")
+	finally:
+		print("💾 数据收集完成")
 
 if __name__ == "__main__":
 	main()

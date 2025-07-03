@@ -8,30 +8,60 @@ import threading
 import time
 import signal
 import sys
+#!/usr/bin/env python3
+"""
+简化的数据收集器
+支持基本的多线程数据收集和视频存储
+"""
+
+import threading
+import time
+import signal
+import json
+import numpy as np
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, Any, Callable, Optional, List
-import numpy as np
-from collections import defaultdict
-import json
-from pathlib import Path
 import h5py
-from datetime import datetime
 import tempfile
 import shutil
 from PIL import Image
+import subprocess
+import os
+from collections import defaultdict
+from datetime import datetime
+
+@dataclass
+class DataSourceConfig:
+    """数据源配置"""
+    name: str
+    callback: Callable[[], Any]
+    frequency: float = 30.0  # Hz
+    enabled: bool = True
+    is_image: bool = False  # 是否为图像数据源
+
+@dataclass
+class VideoConfig:
+    """视频编码配置"""
+    enabled: bool = True  # 启用视频编码
+    codec: str = "libx264"  # 视频编码器: libx264, libx265, libsvtav1
+    pixel_format: str = "yuv420p"  # 像素格式
+    crf: int = 23  # 恒定质量因子 (0=无损, 51=最差质量)
+    fps: int = 30  # 视频帧率
+    keyframe_interval: int = 2  # 关键帧间隔
 
 class DataCollector:
     """简化的数据收集器"""
     
     def __init__(self, fps: int = 30, dataset_name: str = "robot_data", output_dir: str = "./data", 
-                 video_config: Optional['VideoConfig'] = None):
+                 video_config: Optional[VideoConfig] = None):
         self.fps = fps
         self.dataset_name = dataset_name
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.default_frequency = fps
         self.video_config = video_config or VideoConfig()
-        self.data_sources: Dict[str, 'DataSourceConfig'] = {}
+        self.data_sources: Dict[str, DataSourceConfig] = {}
         self.collected_data: Dict[str, List] = {}
         self.timestamps: Dict[str, List] = {}
         self.threads: Dict[str, threading.Thread] = {}
@@ -47,10 +77,8 @@ class DataCollector:
         signal.signal(signal.SIGINT, self._signal_handler)
         
         print(f"🤖 数据收集器初始化完成 - FPS: {fps}, 数据集: {dataset_name}")
-    
-    @dataclass
-    class DataSourceConfig:
-        """Configuration for a data source"""
+        if self.video_config.enabled:
+            print(f"🎥 视频编码: 启用 ({self.video_config.codec}, CRF={self.video_config.crf})")
         name: str
         callback: Callable[[], Any]
         frequency: float = 30.0  # Hz
@@ -195,7 +223,7 @@ class DataCollector:
                 thread.start()
                 self.threads[name] = thread
                 daemon=True
-            )
+            
             thread.start()
             self.threads.append(thread)
         
